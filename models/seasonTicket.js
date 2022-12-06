@@ -23,14 +23,27 @@ const seasonTicket = new Schema(
       default: null,
     },
     passengerType: { type: String, default: null },
-    duration: { type: Number, default: null },
+    duration: {
+      m: {
+        type: Number,
+        default: 0,
+      },
+      d: {
+        type: Number,
+        default: 0,
+      },
+    },
     financeBy: { type: String, default: null },
     paymentType: { type: String, default: null },
     isApproved: { type: Boolean, default: false },
     isRejected: { type: Boolean, default: false },
     isPending: { type: Boolean, default: true },
-    validUpto: { type: Date, required: true },
+    // validUpto: { type: Date, required: true },
     startDate: {
+      type: Date,
+      required: true,
+    },
+    endDate: {
       type: Date,
       required: true,
     },

@@ -9,6 +9,7 @@ const {
   cancelSeasonTicket,
   seasonDetail,
   seasonPayment,
+  cancelTicketList,
 } = require("../../controllers/v1/seasonController");
 //middleware
 const { adminAuth, userAuth } = require("../../middlewares/Auth");
@@ -39,6 +40,11 @@ seasonRouter.post(
   "/cancel",
   userAuth,
   asyncTryCatchMiddleware(cancelSeasonTicket)
+);
+seasonRouter.get(
+  "/cancelTickets",
+  adminAuth,
+  asyncTryCatchMiddleware(cancelTicketList)
 );
 seasonRouter.post("/payment", userAuth, asyncTryCatchMiddleware(seasonPayment));
 module.exports = seasonRouter;

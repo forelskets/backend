@@ -9,19 +9,23 @@ const mongoose = require("mongoose");
 const messages = require("../../helpers/appConstants");
 const moment = require("moment");
 const { paymentStripe } = require("../../helpers/stripe");
+const { Email } = require("../../helpers/email");
+const fs = require("fs");
 const {
   paginationData,
   randomAlphaNumericCode,
   createErrorResponse,
   createSuccessResponse,
 } = require("../../helpers/utils");
+const { duration } = require("moment");
 const seasonTicketKeys = [
   "passengerType",
-  "duration",
   "financeBy",
+  "duration",
   "paymentType",
   // "leave",
   "startDate",
+  "endDate",
 ];
 
 const listSeasonticket = async function (req, res) {
@@ -312,6 +316,11 @@ const addSeasonTicket = async (req, res, next) => {
   const returnDate = moment(req.body.startDate)
     .add(1, "M")
     .format("YYYY-MM-DDTHH:mm:ss");
+  if (!req.body?.endDate) {
+    req.body.endDate = moment(req.body.startDate)
+      .add(req.body?.duration, "M")
+      .format("YYYY-MM-DDTHH:mm:ss.m");
+  }
 
   let passengerType;
   if (req.body.passengerType.toLowerCase() == "adult") {
@@ -427,16 +436,18 @@ const addSeasonTicket = async (req, res, next) => {
       firstClass(
         xmlFirst,
         config,
-        req.body?.passengerType,
+        req.body?.ticketType,
         req.body?.durations,
-        req.body.startDate
+        req.body.startDate,
+        req.body.endDate
       ),
       standardClass(
         xmlStandard,
         config,
-        req.body?.passengerType,
+        req.body?.ticketType,
         req.body?.durations,
-        req.body.startDate
+        req.body.startDate,
+        req.body.endDate
       ),
     ]);
 
@@ -448,7 +459,17 @@ const addSeasonTicket = async (req, res, next) => {
     seasonTicketKeys.map((keys) => {
       obj[keys] = req.body[keys];
     });
-    obj.validUpto = moment(req.body.startDate).add(req.body.duration, "M");
+    const start = moment(req.body.startDate);
+    const end = moment(req.body.endDate);
+    const months = end.diff(start, "months");
+    start.add(months, "months");
+    const days = end.diff(start, "days");
+
+    obj.duration =
+      req.body?.ticketType === "seasonTicket"
+        ? { m: parseInt(req.body?.duration), d: 0 }
+        : { m: months, d: days };
+    obj.endDate = moment(req.body.endDate);
     obj.source = req.body.source.StationName;
     obj.sourceCRSCode = req.body.source.StationCRSCode;
     obj.destination = req.body.destination.StationName;
@@ -470,7 +491,14 @@ const addSeasonTicket = async (req, res, next) => {
   }
 };
 
-const firstClass = (xmlFirst, config, passengerType, durations, startDate) => {
+const firstClass = (
+  xmlFirst,
+  config,
+  ticketType,
+  durations,
+  startDate,
+  endDate
+) => {
   return new Promise(async (resolve, reject) => {
     try {
       const data = await axios.post(
@@ -478,7 +506,7 @@ const firstClass = (xmlFirst, config, passengerType, durations, startDate) => {
         xmlFirst,
         config
       );
-      const price = [];
+      let price;
       data
         ? parsers.parseString(data.data, async function (err, result) {
             if (err) console.log(err);
@@ -495,36 +523,24 @@ const firstClass = (xmlFirst, config, passengerType, durations, startDate) => {
             if (
               result.Envelope.Body.OTA_RailAvailRS.Fares.Fare[0] == undefined
             ) {
-              result.Envelope.Body.OTA_RailAvailRS.Fares.Fare.SeasonTicketPrices.SeasonTicketPrice.map(
-                (e) => {
-                  if (
-                    durations.includes(parseInt(e.$.MonthsValid)) &&
-                    e.$.DaysValid == 0
-                  ) {
-                    price.push({
-                      d: parseInt(e.$.MonthsValid),
-                      p: e.Price.$.Amount,
-                      v: moment(startDate).add(parseInt(e.$.MonthsValid), "M"),
-                    });
-                  }
-                }
+              price = await getPrices(
+                result.Envelope.Body.OTA_RailAvailRS.Fares.Fare
+                  .SeasonTicketPrices.SeasonTicketPrice,
+                durations,
+                ticketType,
+                startDate,
+                endDate
               );
             } else if (
               result.Envelope.Body.OTA_RailAvailRS.Fares.Fare.length > 0
             ) {
-              result.Envelope.Body.OTA_RailAvailRS.Fares.Fare[0].SeasonTicketPrices.SeasonTicketPrice.map(
-                (e) => {
-                  if (
-                    durations.includes(parseInt(e.$.MonthsValid)) &&
-                    e.$.DaysValid == 0
-                  ) {
-                    price.push({
-                      d: parseInt(e.$.MonthsValid),
-                      p: e.Price.$.Amount,
-                      v: moment(startDate).add(parseInt(e.$.MonthsValid), "M"),
-                    });
-                  }
-                }
+              price = await getPrices(
+                result.Envelope.Body.OTA_RailAvailRS.Fares.Fare[0]
+                  .SeasonTicketPrices.SeasonTicketPrice,
+                durations,
+                ticketType,
+                startDate,
+                endDate
               );
             }
             resolve({ first: price });
@@ -539,9 +555,10 @@ const firstClass = (xmlFirst, config, passengerType, durations, startDate) => {
 const standardClass = (
   xmlStandard,
   config,
-  passengerType,
+  ticketType,
   durations,
-  startDate
+  startDate,
+  endDate
 ) => {
   return new Promise(async (resolve, reject) => {
     try {
@@ -551,7 +568,7 @@ const standardClass = (
         config
       );
 
-      const price = [];
+      let price;
       data
         ? parsers.parseString(data.data, async function (err, result) {
             if (err) console.log(err);
@@ -568,36 +585,24 @@ const standardClass = (
             if (
               result.Envelope.Body.OTA_RailAvailRS.Fares.Fare[0] == undefined
             ) {
-              result.Envelope.Body.OTA_RailAvailRS.Fares.Fare.SeasonTicketPrices.SeasonTicketPrice.map(
-                (e) => {
-                  if (
-                    durations.includes(parseInt(e.$.MonthsValid)) &&
-                    e.$.DaysValid == 0
-                  ) {
-                    price.push({
-                      d: parseInt(e.$.MonthsValid),
-                      p: e.Price.$.Amount,
-                      v: moment(startDate).add(parseInt(e.$.MonthsValid), "M"),
-                    });
-                  }
-                }
+              price = await getPrices(
+                result.Envelope.Body.OTA_RailAvailRS.Fares.Fare
+                  .SeasonTicketPrices.SeasonTicketPrice,
+                durations,
+                ticketType,
+                startDate,
+                endDate
               );
             } else if (
               result.Envelope.Body.OTA_RailAvailRS.Fares.Fare.length > 0
             ) {
-              result.Envelope.Body.OTA_RailAvailRS.Fares.Fare[0].SeasonTicketPrices.SeasonTicketPrice.map(
-                (e) => {
-                  if (
-                    durations.includes(parseInt(e.$.MonthsValid)) &&
-                    e.$.DaysValid == 0
-                  ) {
-                    price.push({
-                      d: parseInt(e.$.MonthsValid),
-                      p: e.Price.$.Amount,
-                      v: moment(startDate).add(parseInt(e.$.MonthsValid), "M"),
-                    });
-                  }
-                }
+              price = await getPrices(
+                result.Envelope.Body.OTA_RailAvailRS.Fares.Fare[0]
+                  .SeasonTicketPrices.SeasonTicketPrice,
+                durations,
+                ticketType,
+                startDate,
+                endDate
               );
             }
 
@@ -608,6 +613,49 @@ const standardClass = (
       reject();
     }
   });
+};
+
+const getPrices = (priceArr, durations, ticketType, startDate, endDate) => {
+  return new Promise((resolve) => {
+    const price = [];
+    priceArr.map((e) => {
+      if (e.$.MonthsValid == 1 && e.$.DaysValid == 0) {
+        const dayPrice = (e.Price.$.Amount / 30).toFixed(2);
+
+        const start = moment(startDate);
+        const end = moment(endDate);
+        const months = end.diff(start, "months");
+        start.add(months, "months");
+        const days = end.diff(start, "days");
+
+        ticketType === "flexiTicket" &&
+          price.push({
+            d: { m: months, d: days },
+            p: (dayPrice * (months * 30 + days)).toFixed(2),
+            v: moment(endDate),
+          });
+        durations.forEach((m) => {
+          price.push({
+            d: { m, d: 0 },
+            p: (dayPrice * (m * 30)).toFixed(2),
+            v: moment(startDate).add(parseInt(m), "M"),
+          });
+        });
+      }
+    });
+    resolve(price);
+  });
+};
+
+const cancelTicketList = async (req, res) => {
+  try {
+    const data = await cancelTicket.find();
+    res.status(200).json({ success: true, data });
+  } catch (err) {
+    res
+      .status(500)
+      .json({ success: false, message: err || "Something went wrong." });
+  }
 };
 
 const cancelSeasonTicket = async (req, res, next) => {
@@ -693,6 +741,8 @@ const seasonPayment = async (req, res, next) => {
   const userDetails = req.token;
   const obj = Object.assign({});
   obj.user = req.token._id;
+  req.body.email = userDetails.email;
+  obj.address = userDetails.address;
   obj.ticketId = randomAlphaNumericCode();
   obj.price = parseFloat(req.body.data.price);
   seasonTicketKeys.map((keys) => {
@@ -713,6 +763,7 @@ const seasonPayment = async (req, res, next) => {
       .then(async (success) => {
         // console.log("success", success);
         await new seasonTicket(obj).save();
+        sendPaymentMail(req, res, obj);
         return res
           .status(200)
           .json(createSuccessResponse(messages.paymentSuccessfully));
@@ -723,12 +774,26 @@ const seasonPayment = async (req, res, next) => {
       });
   } else {
     const saveDetail = await new seasonTicket(obj).save();
-    if (saveDetail)
+    if (saveDetail) {
+      sendPaymentMail(req, res, obj);
       return res
         .status(200)
         .json(createSuccessResponse(messages.paymentSuccessfully));
-    else return res.status(400).json(createErrorResponse("Payment failed."));
+    } else return res.status(400).json(createErrorResponse("Payment failed."));
   }
+};
+
+const sendPaymentMail = (req, res, data) => {
+  let subject = "Order Placed Successfully";
+  let text = "Order Placed Successfully";
+  fs.readFile("html/orderPlaced.html", "utf-8", function (err, d) {
+    let responseData = d.replace("ADDRESS", `${data.address}`);
+    responseData = responseData.replace("TICKETID", `${data.ticketId}`);
+    responseData = responseData.replace("ORDERDATE", moment().format("LLL"));
+    responseData = responseData.replace("PRICE", `${data.price}`);
+    Email(req, res, subject, text, responseData);
+    return;
+  });
 };
 
 module.exports = {
@@ -740,4 +805,5 @@ module.exports = {
   seasonDetail,
   cancelSeasonTicket,
   seasonPayment,
+  cancelTicketList,
 };
